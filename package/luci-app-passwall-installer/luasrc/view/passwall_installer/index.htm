@@ -1,1 +1,46 @@
 
+<%+header%>
+<h2>Passwall Offline Installer</h2>
+<p>Choose the version and click Install. Progress appears below.</p>
+
+<div class="cbi-section">
+  <button class="btn cbi-button cbi-button-apply" onclick="run('23')">Install 23.05.x</button>
+  <button class="btn cbi-button cbi-button-apply" onclick="run('24')">Install 24.10.2</button>
+  <button class="btn cbi-button" onclick="stop()">Exit / Cleanup</button>
+</div>
+
+<pre id="log" style="max-height:420px; overflow:auto; background:#111; color:#0f0; padding:8px;"></pre>
+
+<script type="text/javascript">
+let timer = null;
+
+function run(ver) {
+  fetch(L.env.cgi_base + '/admin/services/passwall_installer/run', {
+    method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'ver='+encodeURIComponent(ver)
+  }).then(()=> {
+    if (timer) clearInterval(timer);
+    timer = setInterval(poll, 1200);
+  });
+}
+function poll() {
+  fetch(L.env.cgi_base + '/admin/services/passwall_installer/log')
+    .then(r=>r.text())
+    .then(t=>{
+      const el = document.getElementById('log');
+      el.textContent = t || '...';
+      el.scrollTop = el.scrollHeight;
+    });
+}
+function stop() {
+  fetch('/usr/bin/pw_offline_install.sh?noop=1').catch(()=>{});
+  fetch(L.env.cgi_base + '/admin/services/passwall_installer/log')
+    .then(r=>r.text()).then(t=>{
+      document.getElementById('log').textContent = t + "\n[exit requested]";
+  });
+  if (timer) clearInterval(timer);
+}
+poll();
+</script>
+<%+footer%>
