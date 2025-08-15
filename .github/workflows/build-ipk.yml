@@ -2,6 +2,11 @@
   run: |
     set -eux
     cd openwrt-sdk-*
-    sed -i '/^src-git luci /d' feeds.conf.default
-    echo 'src-git luci https://github.com/openwrt/luci.git;openwrt-23.05' >> feeds.conf.default
+    # اگر luci وجود دارد همان خط را به شاخه دلخواه تغییر بده،
+    # اگر نبود اضافه‌اش کن.
+    sed -i -E 's|^src-git +luci .*$|src-git luci https://github.com/openwrt/luci.git;openwrt-23.05|' feeds.conf.default \
+      || true
+    if ! grep -qE '^src-git +luci ' feeds.conf.default; then
+      echo 'src-git luci https://github.com/openwrt/luci.git;openwrt-23.05' >> feeds.conf.default
+    fi
     ./scripts/feeds update -a
