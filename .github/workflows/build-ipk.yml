@@ -1,64 +1,7 @@
-
-name: build-ipk
-
-on:
-  push:
-    branches: [ "main" ]
-  workflow_dispatch: {}
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        sdk:
-          # چون بسته arch=all است، یک SDK کافی‌ست. (اینجا x86_64)
-          - https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Prepare SDK
-        run: |
-          set -eux
-          SDK_URL="${{ matrix.sdk }}"
-          curl -L "$SDK_URL" -o sdk.tar.xz
-          tar -xJf sdk.tar.xz
-          SDK_DIR=$(ls -d openwrt-sdk-*/ | head -n1)
-          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
-
-      - name: Feed setup (luci)
-        run: |
-          set -eux
-          cd "$SDK_DIR"
-          echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05" >> feeds.conf.default
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-
-      - name: Copy package
-        run: |
-          set -eux
-          cd "$SDK_DIR"
-          mkdir -p package/luci-app-passwall-installer
-          rsync -a --delete "${GITHUB_WORKSPACE}/package/luci-app-passwall-installer/" package/luci-app-passwall-installer/
-
-      - name: Build
-        run: |
-          set -eux
-          cd "$SDK_DIR"
-          make defconfig
-          make package/luci-app-passwall-installer/compile -j$(nproc) V=s
-
-      - name: Collect artifacts
-        run: |
-          set -eux
-          cd "$SDK_DIR"
-          mkdir -p /tmp/ipk
-          find bin -name '*luci-app-passwall-installer*_all.ipk' -exec cp -v {} /tmp/ipk/ \;
-          ls -l /tmp/ipk
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: luci-app-passwall-installer_ipk
-          path: /tmp/ipk/*.ipk
+- name: Feed setup (luci)
+  run: |
+    set -eux
+    cd openwrt-sdk-*
+    sed -i '/^src-git luci /d' feeds.conf.default
+    echo 'src-git luci https://github.com/openwrt/luci.git;openwrt-23.05' >> feeds.conf.default
+    ./scripts/feeds update -a
