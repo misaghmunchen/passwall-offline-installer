@@ -40,7 +40,10 @@ jobs:
           set -eux
           cd sdk
           make defconfig
-
+          echo 'CONFIG_PACKAGE_gmp=m' >> .config
+          echo 'CONFIG_PACKAGE_nettle=m' >> .config
+          make defconfig
+          
       - name: Build packages (gmp, nettle)
         run: |
           set -eux
