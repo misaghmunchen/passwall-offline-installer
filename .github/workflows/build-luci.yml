@@ -1,82 +1,25 @@
-name: build-ipk
-
-on:
-  push:
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-
-    env:
-      SDK_URL: https://downloads.openwrt.org/releases/23.05.5/targets/ipq40xx/chromium/openwrt-sdk-23.05.5-ipq40xx-chromium_gcc-12.3.0_musl_eabi.Linux-x86_64.tar.xz
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Prepare SDK
-        run: |
-          set -eux
-          mkdir -p sdk
-          curl -L --fail -o sdk.tar.xz "$SDK_URL"
-          tar -C sdk --strip-components=1 -xJf sdk.tar.xz
-          rm -f sdk.tar.xz
-
       - name: Feed setup (luci + passwall) with fallback
         run: |
           set -eux
           cd sdk
 
-          # luci رسمی 23.05 + پاسوال (packages + luci)
+          # luci رسمی 23.05 + passwall (packages + luci)
           sed -i '/^src-git luci /d' feeds.conf.default || true
           {
             echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05"
             echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages"
-            echo "src-git passwall_luci https://github.com/xiaorouji/openwrt-passwall;luci"
+            echo "src-git passwall_luci https://github.com/xiaorouji/openwrt-passwall;main"
           } >> feeds.conf.default
 
           # تلاش معمولی با feeds
           ./scripts/feeds update luci passwall_packages passwall_luci || true
 
-          echo "==== indexes created ===="
-          ls -l feeds || true
-          ls -l . | grep '\.index' || true
-
-          # اگر دایرکتوری‌ها ساخته نشد، به‌صورت مستقیم کلون کن
+          # اگر پوشه‌ها ساخته نشد، دستی کلون کن
           [ -d feeds/passwall_packages ] || git clone --depth 1 https://github.com/xiaorouji/openwrt-passwall-packages feeds/passwall_packages
-          [ -d feeds/passwall_luci ] || git clone --depth 1 -b luci https://github.com/xiaorouji/openwrt-passwall feeds/passwall_luci
+          [ -d feeds/passwall_luci ]      || git clone --depth 1 https://github.com/xiaorouji/openwrt-passwall          feeds/passwall_luci
 
-          # نصب بسته‌ها از فید/کلون
+          # نصب
           ./scripts/feeds install -a
 
-          echo "==== final feeds dir ===="
+          # برای اطمینان نمایش وضعیت
           find feeds -maxdepth 1 -type d -printf "%f\n"
-
-      - name: Defconfig
-        run: |
-          set -eux
-          cd sdk
-          make defconfig
-
-      - name: Build luci-app-passwall
-        run: |
-          set -eux
-          cd sdk
-          make package/luci-app-passwall/compile -j"$(nproc)" V=s
-
-      - name: Collect IPKs
-        run: |
-          set -eux
-          cd sdk
-          mkdir -p ../artifacts
-          find bin/packages -type f -name "*.ipk" -exec cp -v {} ../artifacts/ \; || true
-          find bin/targets  -type f -name "*.ipk" -exec cp -v {} ../artifacts/ \; || true
-          ls -l ../artifacts
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ipks
-          path: artifacts/
-          if-no-files-found: error
