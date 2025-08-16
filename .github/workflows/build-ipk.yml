@@ -1,67 +1,62 @@
 name: build-ipk
-
 on:
   push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set variables
-        run: |
-          # SDK مناسب arm_cortex-a7_neon-vfpv4 (مثلاً ipq40xx/generic برای 23.05.5)
-          echo "SDK_URL=https://downloads.openwrt.org/releases/23.05.5/targets/ipq40xx/generic/openwrt-sdk-23.05.5-ipq40xx-generic_gcc-12.3.0_musl_eabi.Linux-x86_64.tar.xz" >> $GITHUB_ENV
-          echo "PKG_ARCH=arm_cortex-a7_neon-vfpv4" >> $GITHUB_ENV
-
-      - name: Fetch OpenWrt SDK
+      # SDK مناسب تارگت خودت را بگذار (مثال x86_64). اگر ipq40xx لازم داری URL را عوض کن.
+      - name: Download & extract OpenWrt SDK
         run: |
           set -eux
-          curl -L "$SDK_URL" -o sdk.tar.xz
-          tar -xJf sdk.tar.xz
-          mv openwrt-sdk-* sdk
+          SDK_URL="https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+          mkdir -p sdk && curl -L "$SDK_URL" | tar -xJ --strip-components=1 -C sdk
 
-      - name: Feed setup (luci + update/install)
+      - name: Prepare feeds (packages + luci)
         run: |
           set -eux
           cd sdk
-          # جلوگیری از تکراری شدن feed
-          sed -i '/^src-git luci /d' feeds.conf.default
-          echo 'src-git luci https://github.com/openwrt/luci.git;openwrt-23.05' >> feeds.conf.default
+          # مطمئن شو تکراری نشود
+          sed -i '/src-git luci /d' feeds.conf.default || true
+          echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05" >> feeds.conf.default
+          # آپدیت و نصب فیدها، مخصوصاً gmp/nettle از فید packages
           ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          ./scripts/feeds install gmp nettle
 
-      - name: Defconfig
+      - name: Defconfig + select packages
         run: |
           set -eux
           cd sdk
           make defconfig
-          echo 'CONFIG_PACKAGE_gmp=m' >> .config
-          echo 'CONFIG_PACKAGE_nettle=m' >> .config
+          # پکیج‌ها را فعال کن (ماژول)
+          echo 'CONFIG_PACKAGE_gmp=m'     >> .config
+          echo 'CONFIG_PACKAGE_nettle=m'  >> .config
           make defconfig
-          
+
       - name: Build packages (gmp, nettle)
         run: |
           set -eux
           cd sdk
-          # مسیر صحیح پکیج‌ها در درخت اصلی OpenWrt
-          make package/libs/gmp/compile -j"$(nproc)" V=s
-          make package/libs/nettle/compile -j"$(nproc)" V=s
+          # حتماً تارگت اسم-محور استفاده کن
+          make package/gmp/compile    -j"$(nproc)" V=s
+          make package/nettle/compile -j"$(nproc)" V=s
 
       - name: Collect IPKs
         run: |
           set -eux
-          mkdir -p out
-          # ipk های ساخته‌شده داخل bin/packages/<arch>/ قرار می‌گیرند
-          find sdk/bin/packages/$PKG_ARCH -type f \( -name "*gmp*ipk" -o -name "*nettle*ipk" \) -print -exec cp {} out/ \;
-          ls -l out
+          cd sdk
+          find bin -type f -name '*.ipk' -printf '%p\n' | tee /tmp/ipk_list.txt
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ipks
-          path: out
+          path: |
+            sdk/bin/**/*.ipk
+            /tmp/ipk_list.txt
