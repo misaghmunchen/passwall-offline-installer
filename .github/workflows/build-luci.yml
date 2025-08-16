@@ -1,43 +1,46 @@
-name: build-luci
+name: build-ipk
 
 on:
   push:
-    paths:
-      - 'luci-app-passwall-offline/**'
-      - '.github/workflows/build-luci.yml'
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+
+    env:
+      SDK_URL: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download OpenWrt SDK (x86_64 کافیست؛ خروجی all است)
+      - name: Prepare SDK
         run: |
           set -eux
-          V=23.05.5
-          T=x86/64
-          SDK="openwrt-sdk-$V-$T_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
-          curl -L -o sdk.tar.xz https://downloads.openwrt.org/releases/$V/targets/$T/$SDK
-          tar -xf sdk.tar.xz
-          mv openwrt-sdk-* sdk
+          mkdir -p sdk
+          curl -L --fail -o sdk.tar.xz "$SDK_URL"
+          tar -C sdk --strip-components=1 -xJf sdk.tar.xz
+          rm -f sdk.tar.xz
 
-      - name: Feed setup (luci)
+      - name: Feed setup (luci + passwall)
         run: |
           set -eux
           cd sdk
-          sed -i '/^src-git luci /d' feeds.conf.default
-          echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05" >> feeds.conf.default
-          ./scripts/feeds update luci
-          ./scripts/feeds install -a -p luci
 
-      - name: Add our package
-        run: |
-          set -eux
-          mkdir -p sdk/package/luci-app-passwall-offline
-          rsync -a luci-app-passwall-offline/ sdk/package/luci-app-passwall-offline/
+          # حذف فید luci تکراری اگر وجود داشته باشد
+          sed -i '/^src-git luci /d' feeds.conf.default || true
+
+          # luci رسمیِ هم‌نسخه با 23.05
+          echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05" >> feeds.conf.default
+
+          # فیدهای پاسوال (دو شاخه: packages و luci)
+          # توجه: وجود هر دو خط لازم است
+          echo "src-git passwall https://github.com/xiaorouji/openwrt-passwall;packages" >> feeds.conf.default
+          echo "src-git passwall_luci https://github.com/xiaorouji/openwrt-passwall;luci" >> feeds.conf.default
+
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
       - name: Defconfig
         run: |
@@ -45,20 +48,28 @@ jobs:
           cd sdk
           make defconfig
 
-      - name: Build
+      - name: Build luci-app-passwall
         run: |
           set -eux
           cd sdk
-          make package/luci-app-passwall-offline/compile -j$(nproc) V=s
+          # فقط خود بسته‌ی Luci را بساز؛ وابستگی‌های Runtime به صورت ipkهای جدا هستند
+          make package/luci-app-passwall/compile -j"$(nproc)" V=s
 
-      - name: Collect IPK
+      - name: Collect IPKs
         run: |
           set -eux
-          mkdir -p ipks
-          find sdk/bin -name 'luci-app-passwall-offline_*_all.ipk' -exec cp -v {} ipks/ \;
+          cd sdk
+          mkdir -p ../artifacts
+          # ipkها معمولا در bin/packages/*/*/*.ipk قرار می‌گیرند
+          find bin/packages -type f -name "*.ipk" -exec cp -v {} ../artifacts/ \; || true
+          # اگر چیزی هم در مسیر targets تولید شد، جمع‌آوری شود
+          find bin/targets -type f -name "*.ipk" -exec cp -v {} ../artifacts/ \; || true
+          # برای راحتی، لیست فایل‌ها را هم چاپ کن
+          ls -l ../artifacts
 
-      - name: Upload artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-passwall-offline_ipk
-          path: ipks/*.ipk
+          name: ipks
+          path: artifacts/
+          if-no-files-found: error
