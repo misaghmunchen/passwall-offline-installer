@@ -1,0 +1,64 @@
+name: build-luci
+
+on:
+  push:
+    paths:
+      - 'luci-app-passwall-offline/**'
+      - '.github/workflows/build-luci.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download OpenWrt SDK (x86_64 کافیست؛ خروجی all است)
+        run: |
+          set -eux
+          V=23.05.5
+          T=x86/64
+          SDK="openwrt-sdk-$V-$T_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+          curl -L -o sdk.tar.xz https://downloads.openwrt.org/releases/$V/targets/$T/$SDK
+          tar -xf sdk.tar.xz
+          mv openwrt-sdk-* sdk
+
+      - name: Feed setup (luci)
+        run: |
+          set -eux
+          cd sdk
+          sed -i '/^src-git luci /d' feeds.conf.default
+          echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05" >> feeds.conf.default
+          ./scripts/feeds update luci
+          ./scripts/feeds install -a -p luci
+
+      - name: Add our package
+        run: |
+          set -eux
+          mkdir -p sdk/package/luci-app-passwall-offline
+          rsync -a luci-app-passwall-offline/ sdk/package/luci-app-passwall-offline/
+
+      - name: Defconfig
+        run: |
+          set -eux
+          cd sdk
+          make defconfig
+
+      - name: Build
+        run: |
+          set -eux
+          cd sdk
+          make package/luci-app-passwall-offline/compile -j$(nproc) V=s
+
+      - name: Collect IPK
+        run: |
+          set -eux
+          mkdir -p ipks
+          find sdk/bin -name 'luci-app-passwall-offline_*_all.ipk' -exec cp -v {} ipks/ \;
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-passwall-offline_ipk
+          path: ipks/*.ipk
