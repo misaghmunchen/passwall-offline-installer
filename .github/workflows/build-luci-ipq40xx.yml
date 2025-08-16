@@ -1,0 +1,88 @@
+name: build-ipk (luci-app-passwall, ipq40xx/chromium)
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare variables
+        run: |
+          set -eux
+          SDK_URL="https://downloads.openwrt.org/releases/23.05.5/targets/ipq40xx/chromium/openwrt-sdk-23.05.5-ipq40xx-chromium_gcc-12.3.0_musl_eabi.Linux-x86_64.tar.xz"
+          echo "SDK_URL=$SDK_URL" >> $GITHUB_ENV
+          echo "SDK_FILE=$(basename "$SDK_URL")" >> $GITHUB_ENV
+
+      - name: Cache SDK tarball (per target)
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/${{ env.SDK_FILE }}
+          key: sdk-${{ env.SDK_FILE }}
+
+      - name: Download & extract OpenWrt SDK (robust)
+        run: |
+          set -eux
+          mkdir -p sdk
+          if [ ! -s "${SDK_FILE}" ]; then
+            MIRRORS=(
+              "$SDK_URL"
+              "${SDK_URL/https:\/\/downloads.openwrt.org/https:\/\/mirror-01.infra.openwrt.org}"
+              "${SDK_URL/https:\/\/downloads.openwrt.org/https:\/\/sources.cdn.openwrt.org}"
+            )
+            ok=0
+            for url in "${MIRRORS[@]}"; do
+              echo ">>> trying: $url"
+              curl -fL --retry 10 --retry-delay 5 --connect-timeout 20 -o "${SDK_FILE}.tmp" "$url" && xz -t "${SDK_FILE}.tmp" && { mv "${SDK_FILE}.tmp" "${SDK_FILE}"; ok=1; break; }
+              rm -f "${SDK_FILE}.tmp" || true
+            done
+            [ "$ok" = 1 ] || { echo "All mirrors failed"; exit 2; }
+          fi
+          tar -xJf "${SDK_FILE}" --strip-components=1 -C sdk
+
+      - name: Configure feeds (luci + passwall)
+        run: |
+          set -eux
+          cd sdk
+          sed -i '/^src-git luci /d' feeds.conf.default || true
+          echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05" >> feeds.conf.default
+          echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages" >> feeds.conf.default
+          echo "src-git passwall_luci https://github.com/xiaorouji/openwrt-passwall" >> feeds.conf.default
+          ./scripts/feeds update -a
+          # نصب دقیق بسته‌ها
+          ./scripts/feeds install luci-base luci-compat luci-app-passwall
+
+      - name: Defconfig
+        run: |
+          set -eux
+          cd sdk
+          make defconfig
+
+      - name: Build luci-app-passwall (from feeds)
+        run: |
+          set -eux
+          cd sdk
+          make package/feeds/passwall_luci/luci-app-passwall/compile -j"$(nproc)" V=s
+
+      - name: Collect IPKs (+debug)
+        run: |
+          set -eux
+          cd sdk
+          echo "==== TREE bin ===="
+          find bin -maxdepth 4 -type f -name "*.ipk" -printf "%p\n" | sort || true
+          mkdir -p ../ipks_out
+          # به طور خاص فایل اصلی را جدا کپی کن
+          find bin -type f -name "luci-app-passwall*.ipk" -exec cp -f {} ../ipks_out/ \; || true
+          # بقیه IPKها هم برای راحتی
+          find bin/packages -type f -name "*.ipk" -exec cp -f {} ../ipks_out/ \; || true
+          ls -l ../ipks_out || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipks
+          path: ipks_out
