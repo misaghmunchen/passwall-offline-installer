@@ -1,46 +1,110 @@
-    - name: Prepare variables
-      run: |
-        set -eux
-        # <<< اگر برای ipq40xx/chromium می‌سازید این را ست کنید >>>
-        SDK_URL="${SDK_URL:-https://downloads.openwrt.org/releases/23.05.5/targets/ipq40xx/chromium/openwrt-sdk-23.05.5-ipq40xx-chromium_gcc-12.3.0_musl_eabi.Linux-x86_64.tar.xz}"
-        echo "SDK_URL=$SDK_URL" >> $GITHUB_ENV
-        echo "SDK_FILE=$(basename "$SDK_URL")" >> $GITHUB_ENV
+name: build-ipk (luci-app-passwall, ipq40xx/chromium)
 
-    - name: Cache SDK tarball
-      uses: actions/cache@v4
-      with:
-        path: ${{ github.workspace }}/${{ env.SDK_FILE }}
-        key: sdk-${{ env.SDK_FILE }}
+on:
+  push:
+  workflow_dispatch:
 
-    - name: Download & verify OpenWrt SDK (robust)
-      run: |
-        set -eux
-        mkdir -p sdk
-        if [ ! -s "${SDK_FILE}" ]; then
-          # سه منبع؛ هر کدام چندبار تلاش
-          MIRRORS=(
-            "$SDK_URL"
-            "${SDK_URL/https:\/\/downloads.openwrt.org/https:\/\/mirror-01.infra.openwrt.org}"
-            "${SDK_URL/https:\/\/downloads.openwrt.org/https:\/\/sources.cdn.openwrt.org}"
-          )
-          ok=0
-          for url in "${MIRRORS[@]}"; do
-            echo ">>> trying: $url"
-            for i in $(seq 1 5); do
-              curl -fL --retry 10 --retry-delay 5 --connect-timeout 20 -o "${SDK_FILE}.tmp" "$url" && break || true
-              sleep 5
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---------- Vars (Target + SDK URL) ----------
+      - name: Prepare variables
+        run: |
+          set -eux
+          # SDK مخصوص ipq40xx/chromium برای OpenWrt 23.05.5
+          SDK_URL="${SDK_URL:-https://downloads.openwrt.org/releases/23.05.5/targets/ipq40xx/chromium/openwrt-sdk-23.05.5-ipq40xx-chromium_gcc-12.3.0_musl_eabi.Linux-x86_64.tar.xz}"
+          echo "SDK_URL=$SDK_URL" >> $GITHUB_ENV
+          echo "SDK_FILE=$(basename "$SDK_URL")" >> $GITHUB_ENV
+
+      # ---------- Cache tarball تا هر بار دانلود نشود ----------
+      - name: Cache SDK tarball
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/${{ env.SDK_FILE }}
+          key: sdk-${{ env.SDK_FILE }}
+
+      # ---------- Robust download + verify + extract ----------
+      - name: Download & extract OpenWrt SDK (robust)
+        run: |
+          set -eux
+          mkdir -p sdk
+          if [ ! -s "${SDK_FILE}" ]; then
+            MIRRORS=(
+              "$SDK_URL"
+              "${SDK_URL/https:\/\/downloads.openwrt.org/https:\/\/mirror-01.infra.openwrt.org}"
+              "${SDK_URL/https:\/\/downloads.openwrt.org/https:\/\/sources.cdn.openwrt.org}"
+            )
+            ok=0
+            for url in "${MIRRORS[@]}"; do
+              echo ">>> trying: $url"
+              for i in $(seq 1 5); do
+                curl -fL --retry 10 --retry-delay 5 --connect-timeout 20 -o "${SDK_FILE}.tmp" "$url" && break || true
+                sleep 5
+              done
+              # صحت فایل
+              if xz -t "${SDK_FILE}.tmp"; then
+                mv -f "${SDK_FILE}.tmp" "${SDK_FILE}"
+                ok=1
+                break
+              else
+                echo "Bad/partial file from $url"
+                rm -f "${SDK_FILE}.tmp"
+              fi
             done
-            # تست سالم بودن xz قبل از جایگزینی
-            if xz -t "${SDK_FILE}.tmp"; then
-              mv -f "${SDK_FILE}.tmp" "${SDK_FILE}"
-              ok=1
-              break
-            else
-              echo "Bad/partial file from $url"
-              rm -f "${SDK_FILE}.tmp"
-            fi
-          done
-          [ "$ok" = 1 ] || { echo "All mirrors failed"; exit 2; }
-        fi
-        # اکسترکت امن
-        tar -xJf "${SDK_FILE}" --strip-components=1 -C sdk
+            [ "$ok" = 1 ] || { echo "All mirrors failed"; exit 2; }
+          fi
+          # Extract
+          tar -xJf "${SDK_FILE}" --strip-components=1 -C sdk
+
+      # ---------- Feeds: luci (23.05) + passwall repos ----------
+      - name: Feed setup (luci + passwall)
+        run: |
+          set -eux
+          cd sdk
+          # پاک کردن luci قبلی در صورت وجود
+          sed -i '/^src-git luci /d' feeds.conf.default || true
+          # luci برای 23.05
+          echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05" >> feeds.conf.default
+          # فیدهای رسمی passwall (دو ریپو جدا)
+          echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages" >> feeds.conf.default
+          echo "src-git passwall_luci https://github.com/xiaorouji/openwrt-passwall" >> feeds.conf.default
+
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      # ---------- defconfig ----------
+      - name: Defconfig
+        run: |
+          set -eux
+          cd sdk
+          make defconfig
+
+      # ---------- Build luci-app-passwall ----------
+      - name: Build luci-app-passwall
+        run: |
+          set -eux
+          cd sdk
+          # ساخت فقط بسته‌ی رابط وب
+          make package/luci-app-passwall/compile -j"$(nproc)" V=s
+
+      # ---------- Collect IPKs ----------
+      - name: Collect IPKs
+        run: |
+          set -eux
+          mkdir -p ipks_out
+          # خروجی‌های بسته‌ها معمولاً اینجاست:
+          find sdk/bin/packages -type f -name "*.ipk" -print -exec cp -f {} ipks_out/ \;
+          # در صورت خروجی‌های پراکنده:
+          find sdk/bin -maxdepth 4 -type f -name "luci-app-passwall*.ipk" -print -exec cp -f {} ipks_out/ \; || true
+          ls -l ipks_out || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipks
+          path: ipks_out
