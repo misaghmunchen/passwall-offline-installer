@@ -1,75 +1,46 @@
-name: build-ipk
+    - name: Prepare variables
+      run: |
+        set -eux
+        # <<< اگر برای ipq40xx/chromium می‌سازید این را ست کنید >>>
+        SDK_URL="${SDK_URL:-https://downloads.openwrt.org/releases/23.05.5/targets/ipq40xx/chromium/openwrt-sdk-23.05.5-ipq40xx-chromium_gcc-12.3.0_musl_eabi.Linux-x86_64.tar.xz}"
+        echo "SDK_URL=$SDK_URL" >> $GITHUB_ENV
+        echo "SDK_FILE=$(basename "$SDK_URL")" >> $GITHUB_ENV
 
-on:
-  push:
-  workflow_dispatch:
+    - name: Cache SDK tarball
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/${{ env.SDK_FILE }}
+        key: sdk-${{ env.SDK_FILE }}
 
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Prepare SDK
-        run: |
-          set -eux
-          SDK_URL="https://downloads.openwrt.org/releases/23.05.5/targets/ipq40xx/chromium/openwrt-sdk-23.05.5-ipq40xx-chromium_gcc-12.3.0_musl_eabi.Linux-x86_64.tar.xz"
-          mkdir -p sdk && cd sdk
-          curl -L "$SDK_URL" | tar -Jx --strip-components=1
-          # بر اساس 23.05
-          sed -i '/^src-git luci /d' feeds.conf.default
-          echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05" >> feeds.conf.default
-          # فیدهای صحیح passwall
-          echo "src-git passwall_luci https://github.com/xiaorouji/openwrt-passwall.git" >> feeds.conf.default
-          echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git" >> feeds.conf.default
-
-      - name: Update & install feeds
-        run: |
-          set -eux
-          cd sdk
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          # برای اطمینان، حداقل‌های لوسی
-          ./scripts/feeds install luci-base luci-compat
-          # خودِ اپ پس‌وال
-          ./scripts/feeds install luci-app-passwall
-
-      - name: Defconfig
-        run: |
-          set -eux
-          cd sdk
-          make defconfig
-          # روشن کردن بیلد luci-app-passwall و چند i18n متداول
-          {
-            echo "CONFIG_PACKAGE_luci-app-passwall=y"
-            echo "CONFIG_PACKAGE_luci-i18n-passwall-en=y"
-            echo "CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y"
-          } >> .config
-          make defconfig
-
-      - name: Build luci-app-passwall
-        run: |
-          set -eux
-          cd sdk
-          # فقط اپ لوسی را بساز تا وابستگی‌های سنگینِ ران‌تایم کشیده نشوند
-          make package/luci-app-passwall/compile -j$(nproc) V=s
-          # زبان‌ها اگر جدا باشند، بساز
-          make package/luci-i18n-passwall-en/compile -j$(nproc) V=s || true
-          make package/luci-i18n-passwall-zh-cn/compile -j$(nproc) V=s || true
-
-      - name: Collect IPKs
-        run: |
-          set -eux
-          cd sdk
-          mkdir -p /tmp/ipks
-          find bin/packages -name "luci-app-passwall_*.ipk" -exec cp {} /tmp/ipks/ \;
-          find bin/packages -name "luci-i18n-passwall-*.ipk" -exec cp {} /tmp/ipks/ \;
-          # برای راحتی، نسخه و معماری را هم لاگ کن
-          ls -l /tmp/ipks
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ipks
-          path: /tmp/ipks
+    - name: Download & verify OpenWrt SDK (robust)
+      run: |
+        set -eux
+        mkdir -p sdk
+        if [ ! -s "${SDK_FILE}" ]; then
+          # سه منبع؛ هر کدام چندبار تلاش
+          MIRRORS=(
+            "$SDK_URL"
+            "${SDK_URL/https:\/\/downloads.openwrt.org/https:\/\/mirror-01.infra.openwrt.org}"
+            "${SDK_URL/https:\/\/downloads.openwrt.org/https:\/\/sources.cdn.openwrt.org}"
+          )
+          ok=0
+          for url in "${MIRRORS[@]}"; do
+            echo ">>> trying: $url"
+            for i in $(seq 1 5); do
+              curl -fL --retry 10 --retry-delay 5 --connect-timeout 20 -o "${SDK_FILE}.tmp" "$url" && break || true
+              sleep 5
+            done
+            # تست سالم بودن xz قبل از جایگزینی
+            if xz -t "${SDK_FILE}.tmp"; then
+              mv -f "${SDK_FILE}.tmp" "${SDK_FILE}"
+              ok=1
+              break
+            else
+              echo "Bad/partial file from $url"
+              rm -f "${SDK_FILE}.tmp"
+            fi
+          done
+          [ "$ok" = 1 ] || { echo "All mirrors failed"; exit 2; }
+        fi
+        # اکسترکت امن
+        tar -xJf "${SDK_FILE}" --strip-components=1 -C sdk
