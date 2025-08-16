@@ -28,19 +28,24 @@ jobs:
           set -eux
           cd sdk
 
-          # حذف فید luci تکراری اگر وجود داشته باشد
+          # حذف ورودی‌های تکراری luci
           sed -i '/^src-git luci /d' feeds.conf.default || true
 
-          # luci رسمیِ هم‌نسخه با 23.05
+          # luci رسمی متناسب با 23.05
           echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05" >> feeds.conf.default
 
-          # فیدهای پاسوال (دو شاخه: packages و luci)
-          # توجه: وجود هر دو خط لازم است
-          echo "src-git passwall https://github.com/xiaorouji/openwrt-passwall;packages" >> feeds.conf.default
+          # پاسوال: پکیج‌ها و لوسی
+          echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages" >> feeds.conf.default
           echo "src-git passwall_luci https://github.com/xiaorouji/openwrt-passwall;luci" >> feeds.conf.default
 
-          ./scripts/feeds update -a
+          # آپدیت فیدها (با retry ساده)
+          ./scripts/feeds update luci passwall_packages passwall_luci || ./scripts/feeds update -a
           ./scripts/feeds install -a
+
+          echo "==== feeds.conf.default ===="
+          cat feeds.conf.default
+          echo "==== ls feeds ===="
+          ls -la feeds || true
 
       - name: Defconfig
         run: |
@@ -52,7 +57,6 @@ jobs:
         run: |
           set -eux
           cd sdk
-          # فقط خود بسته‌ی Luci را بساز؛ وابستگی‌های Runtime به صورت ipkهای جدا هستند
           make package/luci-app-passwall/compile -j"$(nproc)" V=s
 
       - name: Collect IPKs
@@ -60,11 +64,8 @@ jobs:
           set -eux
           cd sdk
           mkdir -p ../artifacts
-          # ipkها معمولا در bin/packages/*/*/*.ipk قرار می‌گیرند
           find bin/packages -type f -name "*.ipk" -exec cp -v {} ../artifacts/ \; || true
-          # اگر چیزی هم در مسیر targets تولید شد، جمع‌آوری شود
-          find bin/targets -type f -name "*.ipk" -exec cp -v {} ../artifacts/ \; || true
-          # برای راحتی، لیست فایل‌ها را هم چاپ کن
+          find bin/targets  -type f -name "*.ipk" -exec cp -v {} ../artifacts/ \; || true
           ls -l ../artifacts
 
       - name: Upload artifacts
