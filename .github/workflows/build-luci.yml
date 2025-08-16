@@ -23,29 +23,35 @@ jobs:
           tar -C sdk --strip-components=1 -xJf sdk.tar.xz
           rm -f sdk.tar.xz
 
-      - name: Feed setup (luci + passwall)
+      - name: Feed setup (luci + passwall) with fallback
         run: |
           set -eux
           cd sdk
 
-          # حذف ورودی‌های تکراری luci
+          # luci رسمی 23.05 + پاسوال (packages + luci)
           sed -i '/^src-git luci /d' feeds.conf.default || true
+          {
+            echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05"
+            echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages"
+            echo "src-git passwall_luci https://github.com/xiaorouji/openwrt-passwall;luci"
+          } >> feeds.conf.default
 
-          # luci رسمی متناسب با 23.05
-          echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05" >> feeds.conf.default
+          # تلاش معمولی با feeds
+          ./scripts/feeds update luci passwall_packages passwall_luci || true
 
-          # پاسوال: پکیج‌ها و لوسی
-          echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages" >> feeds.conf.default
-          echo "src-git passwall_luci https://github.com/xiaorouji/openwrt-passwall;luci" >> feeds.conf.default
+          echo "==== indexes created ===="
+          ls -l feeds || true
+          ls -l . | grep '\.index' || true
 
-          # آپدیت فیدها (با retry ساده)
-          ./scripts/feeds update luci passwall_packages passwall_luci || ./scripts/feeds update -a
+          # اگر دایرکتوری‌ها ساخته نشد، به‌صورت مستقیم کلون کن
+          [ -d feeds/passwall_packages ] || git clone --depth 1 https://github.com/xiaorouji/openwrt-passwall-packages feeds/passwall_packages
+          [ -d feeds/passwall_luci ] || git clone --depth 1 -b luci https://github.com/xiaorouji/openwrt-passwall feeds/passwall_luci
+
+          # نصب بسته‌ها از فید/کلون
           ./scripts/feeds install -a
 
-          echo "==== feeds.conf.default ===="
-          cat feeds.conf.default
-          echo "==== ls feeds ===="
-          ls -la feeds || true
+          echo "==== final feeds dir ===="
+          find feeds -maxdepth 1 -type d -printf "%f\n"
 
       - name: Defconfig
         run: |
