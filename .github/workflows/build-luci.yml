@@ -1,25 +1,75 @@
-      - name: Feed setup (luci + passwall) with fallback
+name: build-ipk
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare SDK
+        run: |
+          set -eux
+          SDK_URL="https://downloads.openwrt.org/releases/23.05.5/targets/ipq40xx/chromium/openwrt-sdk-23.05.5-ipq40xx-chromium_gcc-12.3.0_musl_eabi.Linux-x86_64.tar.xz"
+          mkdir -p sdk && cd sdk
+          curl -L "$SDK_URL" | tar -Jx --strip-components=1
+          # بر اساس 23.05
+          sed -i '/^src-git luci /d' feeds.conf.default
+          echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05" >> feeds.conf.default
+          # فیدهای صحیح passwall
+          echo "src-git passwall_luci https://github.com/xiaorouji/openwrt-passwall.git" >> feeds.conf.default
+          echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git" >> feeds.conf.default
+
+      - name: Update & install feeds
         run: |
           set -eux
           cd sdk
-
-          # luci رسمی 23.05 + passwall (packages + luci)
-          sed -i '/^src-git luci /d' feeds.conf.default || true
-          {
-            echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05"
-            echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages"
-            echo "src-git passwall_luci https://github.com/xiaorouji/openwrt-passwall;main"
-          } >> feeds.conf.default
-
-          # تلاش معمولی با feeds
-          ./scripts/feeds update luci passwall_packages passwall_luci || true
-
-          # اگر پوشه‌ها ساخته نشد، دستی کلون کن
-          [ -d feeds/passwall_packages ] || git clone --depth 1 https://github.com/xiaorouji/openwrt-passwall-packages feeds/passwall_packages
-          [ -d feeds/passwall_luci ]      || git clone --depth 1 https://github.com/xiaorouji/openwrt-passwall          feeds/passwall_luci
-
-          # نصب
+          ./scripts/feeds update -a
           ./scripts/feeds install -a
+          # برای اطمینان، حداقل‌های لوسی
+          ./scripts/feeds install luci-base luci-compat
+          # خودِ اپ پس‌وال
+          ./scripts/feeds install luci-app-passwall
 
-          # برای اطمینان نمایش وضعیت
-          find feeds -maxdepth 1 -type d -printf "%f\n"
+      - name: Defconfig
+        run: |
+          set -eux
+          cd sdk
+          make defconfig
+          # روشن کردن بیلد luci-app-passwall و چند i18n متداول
+          {
+            echo "CONFIG_PACKAGE_luci-app-passwall=y"
+            echo "CONFIG_PACKAGE_luci-i18n-passwall-en=y"
+            echo "CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y"
+          } >> .config
+          make defconfig
+
+      - name: Build luci-app-passwall
+        run: |
+          set -eux
+          cd sdk
+          # فقط اپ لوسی را بساز تا وابستگی‌های سنگینِ ران‌تایم کشیده نشوند
+          make package/luci-app-passwall/compile -j$(nproc) V=s
+          # زبان‌ها اگر جدا باشند، بساز
+          make package/luci-i18n-passwall-en/compile -j$(nproc) V=s || true
+          make package/luci-i18n-passwall-zh-cn/compile -j$(nproc) V=s || true
+
+      - name: Collect IPKs
+        run: |
+          set -eux
+          cd sdk
+          mkdir -p /tmp/ipks
+          find bin/packages -name "luci-app-passwall_*.ipk" -exec cp {} /tmp/ipks/ \;
+          find bin/packages -name "luci-i18n-passwall-*.ipk" -exec cp {} /tmp/ipks/ \;
+          # برای راحتی، نسخه و معماری را هم لاگ کن
+          ls -l /tmp/ipks
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipks
+          path: /tmp/ipks
